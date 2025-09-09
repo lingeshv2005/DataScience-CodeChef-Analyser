@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeChef Leaderboard</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.0/Recharts.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { createRoot } = ReactDOM;
+
+    const Leaderboard = () => {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [sortBy, setSortBy] = useState('rating');
+      const [sortOrder, setSortOrder] = useState('desc');
+      const [minRating, setMinRating] = useState(0);
+
+      const loadExcelData = async (filePath) => {
+        const response = await fetch(filePath);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const arrayBuffer = await response.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        return {
+          users: XLSX.utils.sheet_to_json(workbook.Sheets["Users"]),
+          badges: XLSX.utils.sheet_to_json(workbook.Sheets["Badges"]),
+          ratings: XLSX.utils.sheet_to_json(workbook.Sheets["Ratings"]),
+          ranks: XLSX.utils.sheet_to_json(workbook.Sheets["Ranks"]),
+          submissions: XLSX.utils.sheet_to_json(workbook.Sheets["Submissions"]),
+        };
+      };
+
+      const processData = (users, badges, ratings, ranks, submissions) => {
+        const cleanedUsers = users.map(row => ({ username: row["Username"]?.trim() || "" })).filter(row => row.username);
+        const badgeCounts = badges.reduce((acc, row) => {
+          const username = row["Username"]?.trim();
+          if (username && row["Title"] !== "No Badges Earned") {
+            acc[username] = (acc[username] || 0) + 1;
+          }
+          return acc;
+        }, {});
+        const cleanedRatings = ratings.map(row => {
+          const rating = parseInt(row["Rating"]?.replace("?i\n    Provisional Rating, click to know more", "")?.trim(), 10);
+          return { username: row["Username"]?.trim(), rating: isNaN(rating) ? 0 : rating, highest: parseInt(row["Highest"]?.match(/\d+/)?.[0], 10) || 0 };
+        }).filter(row => row.username);
+        const rankData = ranks.reduce((acc, row) => {
+          const username = row["Username"]?.trim();
+          if (username && row["Label"] === "Global Rank") acc[username] = parseInt(row["Rank"], 10) || null;
+          return acc;
+        }, {});
+        const submissionCounts = submissions.reduce((acc, row) => {
+          const username = row["Username"]?.trim();
+          if (username && row["Result"]?.includes("(100)")) acc[username] = (acc[username] || 0) + 1;
+          return acc;
+        }, {});
+
+        const mergedData = cleanedUsers.map(user => ({
+          username: user.username,
+          badges: badgeCounts[user.username] || 0,
+          rating: cleanedRatings.find(r => r.username === user.username)?.rating || 0,
+          highestRating: cleanedRatings.find(r => r.username === user.username)?.highest || 0,
+          globalRank: rankData[user.username] || null,
+          submissions: submissionCounts[user.username] || 0,
+        }));
+
+        return mergedData;
+      };
+
+      useEffect(() => {
+        const loadData = async () => {
+          try {
+            const rawData = await loadExcelData("./codechefprofiles.xlsx");
+            const processed = processData(rawData.users, rawData.badges, rawData.ratings, rawData.ranks, rawData.submissions);
+            setData(processed);
+            setLoading(false);
+          } catch (err) {
+            setError(err.message);
+            setLoading(false);
+          }
+        };
+        loadData();
+      }, []);
+
+      const handleSort = (key) => {
+        const order = (sortBy === key && sortOrder === 'desc') ? 'asc' : 'desc';
+        setSortBy(key);
+        setSortOrder(order);
+      };
+
+      const sortedData = data ? [...data]
+        .filter(user => user.rating >= minRating)
+        .sort((a, b) => {
+          if (sortOrder === 'desc') return b[sortBy] - a[sortBy];
+          return a[sortBy] - b[sortBy];
+        }) : [];
+
+      const top10 = sortedData.slice(0, 10).map(user => ({ username: user.username, rating: user.rating }));
+
+      if (error) return <div className="text-center text-red-600">Error: {error}</div>;
+      if (loading) return <div className="text-center">Loading...</div>;
+
+      return (
+        <div className="bg-white shadow-md rounded-lg p-6">
+          <h1 className="text-3xl font-bold text-blue-600 mb-4">CodeChef Leaderboard</h1>
+          <div className="mb-4">
+            <label className="mr-2">Sort by:</label>
+            <select onChange={(e) => handleSort(e.target.value)} value={sortBy} className="p-2 border rounded">
+              <option value="rating">Rating</option>
+              <option value="highestRating">Highest Rating</option>
+              <option value="badges">Badges</option>
+              <option value="submissions">Submissions</option>
+              <option value="globalRank">Global Rank</option>
+            </select>
+            <label className="ml-4 mr-2">Min Rating:</label>
+            <input type="number" value={minRating} onChange={(e) => setMinRating(parseInt(e.target.value) || 0)} className="p-2 border rounded" />
+          </div>
+          <div className="overflow-x-auto mb-8">
+            <table className="min-w-full bg-gray-50 rounded-md shadow">
+              <thead>
+                <tr className="bg-blue-500 text-white">
+                  <th className="py-2 px-4">Rank</th>
+                  <th className="py-2 px-4">Username</th>
+                  <th className="py-2 px-4">Rating</th>
+                  <th className="py-2 px-4">Highest Rating</th>
+                  <th className="py-2 px-4">Badges</th>
+                  <th className="py-2 px-4">Submissions</th>
+                  <th className="py-2 px-4">Global Rank</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sortedData.map((user, index) => (
+                  <tr key={user.username} className="border-t">
+                    <td className="py-2 px-4">{index + 1}</td>
+                    <td className="py-2 px-4">{user.username}</td>
+                    <td className="py-2 px-4">{user.rating}</td>
+                    <td className="py-2 px-4">{user.highestRating}</td>
+                    <td className="py-2 px-4">{user.badges}</td>
+                    <td className="py-2 px-4">{user.submissions}</td>
+                    <td className="py-2 px-4">{user.globalRank || "N/A"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <h2 className="text-2xl font-semibold text-blue-500 mb-4">Top 10 by Rating</h2>
+          <Recharts.ResponsiveContainer width="100%" height={300}>
+            <Recharts.BarChart data={top10}>
+              <Recharts.XAxis dataKey="username" />
+              <Recharts.YAxis />
+              <Recharts.Tooltip />
+              <Recharts.Bar dataKey="rating" fill="#4a90e2" />
+            </Recharts.BarChart>
+          </Recharts.ResponsiveContainer>
+        </div>
+      );
+    };
+
+    const root = createRoot(document.getElementById('root'));
+    root.render(<Leaderboard />);
+  </script>
+</body>
+</html>

@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeChef User Profile</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chrono-node/1.3.11/chrono.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.0/Recharts.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    // Initializing React and dependencies
+    const { useState, useEffect } = React;
+    const { createRoot } = ReactDOM;
+
+    // Defining the main UserProfile component
+    const UserProfile = () => {
+      const [data, setData] = useState(null);
+      const [submissions, setSubmissions] = useState([]);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [selectedUser, setSelectedUser] = useState("");
+
+      // Function to load and parse Excel file
+      const loadExcelData = async (filePath) => {
+        const response = await fetch(filePath);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+
+        // Convert each sheet to JSON
+        const users = XLSX.utils.sheet_to_json(workbook.Sheets["Users"]);
+        const badges = XLSX.utils.sheet_to_json(workbook.Sheets["Badges"]);
+        const ratings = XLSX.utils.sheet_to_json(workbook.Sheets["Ratings"]);
+        const ranks = XLSX.utils.sheet_to_json(workbook.Sheets["Ranks"]);
+        const submissions = XLSX.utils.sheet_to_json(workbook.Sheets["Submissions"]);
+
+        return { users, badges, ratings, ranks, submissions };
+      };
+
+      // Processing and cleaning data from all sheets
+      const processAndCleanData = (users, badges, ratings, ranks, submissions) => {
+        // Cleaning users data
+        const cleanedUsers = users.map(row => ({ username: row["Username"]?.trim() || "" }))
+          .filter(row => row.username);
+
+        // Cleaning badges data
+        const cleanedBadges = badges.map(row => ({
+          username: row["Username"]?.trim() || "",
+          title: row["Title"]?.trim() || "",
+          type: row["Title"]?.split(" - ")[0]?.trim() || "",
+          level: row["Title"]?.split(" - ")[1]?.replace("Badge", "").trim() || "",
+          description: row["Description"]?.trim() || "",
+          imageUrl: row["Image URL"]?.trim() || "",
+        })).filter(row => row.username && row.title !== "No Badges Earned");
+
+        // Aggregating badges by user and type
+        const badgeCounts = cleanedBadges.reduce((acc, { username, type, level }) => {
+          acc[username] = acc[username] || { total: 0, types: {} };
+          acc[username].total += 1;
+          acc[username].types[type] = acc[username].types[type] || {};
+          acc[username].types[type][level] = (acc[username].types[type][level] || 0) + 1;
+          return acc;
+        }, {});
+
+        // Cleaning ratings data
+        const cleanedRatings = ratings.map(row => {
+          const rating = parseInt(row["Rating"]?.replace("?i\n    Provisional Rating, click to know more", "")?.trim(), 10);
+          const highest = parseInt(row["Highest"]?.match(/\d+/)?.[0], 10);
+          return {
+            username: row["Username"]?.trim() || "",
+            rating: isNaN(rating) ? null : rating,
+            highest: isNaN(highest) ? null : highest,
+            stars: row["Stars"]?.trim() || "N/A",
+          };
+        }).filter(row => row.username && row.rating !== null);
+
+        // Cleaning ranks data
+        const cleanedRanks = ranks.map(row => ({
+          username: row["Username"]?.trim() || "",
+          label: row["Label"]?.trim() || "",
+          rank: parseInt(row["Rank"]?.trim(), 10) || null,
+        })).filter(row => row.username && row.rank !== null);
+
+        // Aggregating ranks by user
+        const rankData = cleanedRanks.reduce((acc, { username, label, rank }) => {
+          acc[username] = acc[username] || {};
+          acc[username][label] = rank;
+          return acc;
+        }, {});
+
+        // Cleaning submissions data
+        const cleanedSubmissions = submissions.map(row => ({
+          username: row["Username"]?.trim() || "",
+          time: row["Time"]?.trim() || "",
+          problem: row["Problem"]?.trim() || "",
+          result: row["Result"]?.trim() || "",
+          language: row["Language"]?.trim() || "",
+          solutionLink: row["Solution Link"]?.trim() || "N/A",
+        })).filter(row => row.username);
+
+        // Aggregating submissions by user and language
+        const submissionCounts = cleanedSubmissions.reduce((acc, { username, language }) => {
+          acc[username] = acc[username] || { total: 0, languages: {} };
+          acc[username].total += 1;
+          acc[username].languages[language] = (acc[username].languages[language] || 0) + 1;
+          return acc;
+        }, {});
+
+        // Merging data
+        const mergedData = cleanedUsers.map(user => ({
+          username: user.username,
+          badges: badgeCounts[user.username] || { total: 0, types: {} },
+          rating: cleanedRatings.find(r => r.username === user.username)?.rating || 0,
+          highestRating: cleanedRatings.find(r => r.username === user.username)?.highest || 0,
+          stars: cleanedRatings.find(r => r.username === user.username)?.stars || "N/A",
+          globalRank: rankData[user.username]?.["Global Rank"] || null,
+          countryRank: rankData[user.username]?.["Country Rank"] || null,
+          submissions: submissionCounts[user.username] || { total: 0, languages: {} },
+        }));
+
+        return { users: mergedData, submissions: cleanedSubmissions };
+      };
+
+      // Loading data from Excel file
+      useEffect(() => {
+        const loadData = async () => {
+          try {
+            const { users, badges, ratings, ranks, submissions } = await loadExcelData("./codechefprofiles.xlsx");
+            const processedData = processAndCleanData(users, badges, ratings, ranks, submissions);
+            setData(processedData.users);
+            setSubmissions(processedData.submissions);
+            setLoading(false);
+            // Set default selected user to the first user in the list
+            if (processedData.users.length > 0) {
+              setSelectedUser(processedData.users[0].username);
+            }
+          } catch (err) {
+            console.error("Error loading Excel:", err);
+            setError(err.message);
+            setLoading(false);
+          }
+        };
+
+        loadData();
+      }, []);
+
+      // Handle dropdown change
+      const handleUserChange = (event) => {
+        setSelectedUser(event.target.value);
+      };
+
+      // Rendering error message if error
+      if (error) {
+        return (
+          <div className="text-center text-xl font-semibold text-red-600">
+            Error loading data: {error}<br /><br />
+            Please ensure the file &#39;codechefprofiles.xlsx&#39; is placed in the same directory as this HTML file and is being served by your local server (e.g., VS Code Live Server). The file should be accessible at the relative path &#39;./codechefprofiles.xlsx&#39;. If the error persists, check the console for more details and verify the file path.
+          </div>
+        );
+      }
+
+      // Rendering loading message
+      if (loading) {
+        return (
+          <div className="text-center text-xl font-semibold text-gray-700">
+            Loading CodeChef User Profile...
+          </div>
+        );
+      }
+
+      // Find selected user's data
+      const userData = data.find(user => user.username === selectedUser) || {};
+      const userSubmissions = submissions.filter(sub => sub.username === selectedUser);
+
+      // Rendering main user profile
+      return (
+        <div className="bg-white shadow-md rounded-lg p-6">
+          <h1 className="text-3xl font-bold text-blue-600 mb-4">CodeChef User Profile</h1>
+
+          {/* Dropdown for selecting user */}
+          <div className="mb-6">
+            <label htmlFor="userSelect" className="block text-lg font-semibold text-gray-700 mb-2">
+              Select User:
+            </label>
+            <select
+              id="userSelect"
+              value={selectedUser}
+              onChange={handleUserChange}
+              className="block w-full max-w-md p-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+            >
+              {data.map(user => (
+                <option key={user.username} value={user.username}>
+                  {user.username}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* User details */}
+          {selectedUser && (
+            <div>
+              <h2 className="text-2xl font-semibold text-blue-500 mb-4">Profile: {selectedUser}</h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                {/* Badges */}
+                <div className="bg-gray-50 p-4 rounded-md shadow">
+                  <h3 className="text-xl font-semibold text-gray-800 mb-2">Badges</h3>
+                  <p className="text-gray-700">Total Badges: {userData.badges?.total || 0}</p>
+                  {Object.entries(userData.badges?.types || {}).length > 0 ? (
+                    <ul className="list-disc list-inside text-gray-700">
+                      {Object.entries(userData.badges.types).map(([type, levels]) => (
+                        <li key={type}>
+                          {type}: {Object.entries(levels).map(([level, count]) => `${level} (${count})`).join(", ")}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-gray-700">No badges earned.</p>
+                  )}
+                </div>
+
+                {/* Ratings */}
+                <div className="bg-gray-50 p-4 rounded-md shadow">
+                  <h3 className="text-xl font-semibold text-gray-800 mb-2">Ratings</h3>
+                  <p className="text-gray-700">Current Rating: {userData.rating || "N/A"}</p>
+                  <p className="text-gray-700">Highest Rating: {userData.highestRating || "N/A"}</p>
+                  <p className="text-gray-700">Stars: {userData.stars || "N/A"}</p>
+                </div>
+
+                {/* Ranks */}
+                <div className="bg-gray-50 p-4 rounded-md shadow">
+                  <h3 className="text-xl font-semibold text-gray-800 mb-2">Ranks</h3>
+                  <p className="text-gray-700">Global Rank: {userData.globalRank || "N/A"}</p>
+                  <p className="text-gray-700">Country Rank: {userData.countryRank || "N/A"}</p>
+                </div>
+
+                {/* Submissions Summary */}
+                <div className="bg-gray-50 p-4 rounded-md shadow">
+                  <h3 className="text-xl font-semibold text-gray-800 mb-2">Submissions Summary</h3>
+                  <p className="text-gray-700">Total Submissions: {userData.submissions?.total || 0}</p>
+                  {Object.entries(userData.submissions?.languages || {}).length > 0 ? (
+                    <ul className="list-disc list-inside text-gray-700">
+                      {Object.entries(userData.submissions.languages).map(([language, count]) => (
+                        <li key={language}>
+                          {language}: {count}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="text-gray-700">No submissions recorded.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Submissions Table */}
+              <h2 className="text-2xl font-semibold text-blue-500 mb-4">All Submissions</h2>
+              {userSubmissions.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full bg-gray-50 rounded-md shadow">
+                    <thead>
+                      <tr className="bg-blue-500 text-white">
+                        <th className="py-2 px-4 text-left">Time</th>
+                        <th className="py-2 px-4 text-left">Problem</th>
+                        <th className="py-2 px-4 text-left">Result</th>
+                        <th className="py-2 px-4 text-left">Language</th>
+                        <th className="py-2 px-4 text-left">Solution Link</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {userSubmissions.map((sub, index) => (
+                        <tr key={index} className="border-t">
+                          <td className="py-2 px-4 text-gray-700">{sub.time || "N/A"}</td>
+                          <td className="py-2 px-4 text-gray-700">{sub.problem || "N/A"}</td>
+                          <td className="py-2 px-4 text-gray-700">{sub.result || "N/A"}</td>
+                          <td className="py-2 px-4 text-gray-700">{sub.language || "N/A"}</td>
+                          <td className="py-2 px-4">
+                            {sub.solutionLink && sub.solutionLink !== "N/A" ? (
+                              <a
+                                href={sub.solutionLink}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 hover:underline"
+                              >
+                                View Solution
+                              </a>
+                            ) : (
+                              "N/A"
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-lg text-gray-700">No submissions found for this user.</p>
+              )}
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // Rendering the app
+    const root = createRoot(document.getElementById('root'));
+    root.render(<UserProfile />);
+  </script>
+</body>
+</html>

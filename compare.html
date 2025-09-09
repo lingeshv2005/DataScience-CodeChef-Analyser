@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeChef User Comparison</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.0/Recharts.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect } = React;
+    const { createRoot } = ReactDOM;
+
+    const UserComparison = () => {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+      const [selectedUsers, setSelectedUsers] = useState([]);
+
+      const loadExcelData = async (filePath) => {
+        const response = await fetch(filePath);
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const arrayBuffer = await response.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+        return {
+          users: XLSX.utils.sheet_to_json(workbook.Sheets["Users"]),
+          badges: XLSX.utils.sheet_to_json(workbook.Sheets["Badges"]),
+          ratings: XLSX.utils.sheet_to_json(workbook.Sheets["Ratings"]),
+          ranks: XLSX.utils.sheet_to_json(workbook.Sheets["Ranks"]),
+          submissions: XLSX.utils.sheet_to_json(workbook.Sheets["Submissions"]),
+        };
+      };
+
+      const processData = (users, badges, ratings, ranks, submissions) => {
+        const cleanedUsers = users.map(row => ({ username: row["Username"]?.trim() || "" })).filter(row => row.username);
+        const badgeCounts = badges.reduce((acc, row) => {
+          const username = row["Username"]?.trim();
+          if (username && row["Title"] !== "No Badges Earned") {
+            acc[username] = (acc[username] || 0) + 1;
+          }
+          return acc;
+        }, {});
+        const cleanedRatings = ratings.map(row => {
+          const rating = parseInt(row["Rating"]?.replace("?i\n    Provisional Rating, click to know more", "")?.trim(), 10);
+          return { username: row["Username"]?.trim(), rating: isNaN(rating) ? 0 : rating, highest: parseInt(row["Highest"]?.match(/\d+/)?.[0], 10) || 0 };
+        }).filter(row => row.username);
+        const rankData = ranks.reduce((acc, row) => {
+          const username = row["Username"]?.trim();
+          if (username && row["Label"] === "Global Rank") acc[username] = parseInt(row["Rank"], 10) || null;
+          return acc;
+        }, {});
+        const submissionCounts = submissions.reduce((acc, row) => {
+          const username = row["Username"]?.trim();
+          if (username && row["Result"]?.includes("(100)")) acc[username] = (acc[username] || 0) + 1;
+          return acc;
+        }, {});
+
+        const mergedData = cleanedUsers.map(user => ({
+          username: user.username,
+          badges: badgeCounts[user.username] || 0,
+          rating: cleanedRatings.find(r => r.username === user.username)?.rating || 0,
+          highestRating: cleanedRatings.find(r => r.username === user.username)?.highest || 0,
+          globalRank: rankData[user.username] || null,
+          submissions: submissionCounts[user.username] || 0,
+        }));
+
+        return mergedData;
+      };
+
+      useEffect(() => {
+        const loadData = async () => {
+          try {
+            const rawData = await loadExcelData("./codechefprofiles.xlsx");
+            const processed = processData(rawData.users, rawData.badges, rawData.ratings, rawData.ranks, rawData.submissions);
+            setData(processed);
+            setLoading(false);
+          } catch (err) {
+            setError(err.message);
+            setLoading(false);
+          }
+        };
+        loadData();
+      }, []);
+
+      const handleSelect = (e) => {
+        const value = e.target.value;
+        if (!selectedUsers.includes(value) && selectedUsers.length < 3) {
+          setSelectedUsers([...selectedUsers, value]);
+        }
+      };
+
+      const removeUser = (username) => {
+        setSelectedUsers(selectedUsers.filter(u => u !== username));
+      };
+
+      const compareData = selectedUsers.map(username => data.find(user => user.username === username)).filter(Boolean);
+      const radarData = [
+        { metric: 'Rating', ...Object.fromEntries(compareData.map((user, i) => [`User${i+1}`, user.rating])) },
+        { metric: 'Highest Rating', ...Object.fromEntries(compareData.map((user, i) => [`User${i+1}`, user.highestRating])) },
+        { metric: 'Badges', ...Object.fromEntries(compareData.map((user, i) => [`User${i+1}`, user.badges])) },
+        { metric: 'Submissions', ...Object.fromEntries(compareData.map((user, i) => [`User${i+1}`, user.submissions])) },
+        { metric: 'Global Rank (Inverted)', ...Object.fromEntries(compareData.map((user, i) => [`User${i+1}`, 1 / (user.globalRank || Infinity)])) }, // Inverted for better radar
+      ];
+
+      if (error) return <div className="text-center text-red-600">Error: {error}</div>;
+      if (loading) return <div className="text-center">Loading...</div>;
+
+      return (
+        <div className="bg-white shadow-md rounded-lg p-6">
+          <h1 className="text-3xl font-bold text-blue-600 mb-4">CodeChef User Comparison</h1>
+          <div className="mb-4">
+            <label className="block mb-2">Select up to 3 Users:</label>
+            <select onChange={handleSelect} className="p-2 border rounded w-full max-w-md">
+              <option value="">-- Select --</option>
+              {data.map(user => <option key={user.username} value={user.username}>{user.username}</option>)}
+            </select>
+            <div className="mt-2">
+              Selected: {selectedUsers.map(u => (
+                <span key={u} className="inline-block bg-blue-200 p-1 m-1 rounded">{u} <button onClick={() => removeUser(u)} className="text-red-600">x</button></span>
+              ))}
+            </div>
+          </div>
+          {compareData.length > 1 && (
+            <>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-8">
+                {compareData.map(user => (
+                  <div key={user.username} className="bg-gray-50 p-4 rounded-md shadow">
+                    <h3 className="text-xl font-semibold">{user.username}</h3>
+                    <p>Rating: {user.rating}</p>
+                    <p>Highest: {user.highestRating}</p>
+                    <p>Badges: {user.badges}</p>
+                    <p>Submissions: {user.submissions}</p>
+                    <p>Global Rank: {user.globalRank || "N/A"}</p>
+                  </div>
+                ))}
+              </div>
+              <h2 className="text-2xl font-semibold text-blue-500 mb-4">Comparison Radar</h2>
+              <Recharts.ResponsiveContainer width="100%" height={400}>
+                <Recharts.RadarChart data={radarData}>
+                  <Recharts.PolarGrid />
+                  <Recharts.PolarAngleAxis dataKey="metric" />
+                  <Recharts.PolarRadiusAxis />
+                  <Recharts.Tooltip />
+                  {selectedUsers.map((_, i) => (
+                    <Recharts.Radar key={`User${i+1}`} name={selectedUsers[i]} dataKey={`User${i+1}`} stroke={['#8884d8', '#82ca9d', '#ffc658'][i]} fill={['#8884d8', '#82ca9d', '#ffc658'][i]} fillOpacity={0.6} />
+                  ))}
+                  <Recharts.Legend />
+                </Recharts.RadarChart>
+              </Recharts.ResponsiveContainer>
+            </>
+          )}
+        </div>
+      );
+    };
+
+    const root = createRoot(document.getElementById('root'));
+    root.render(<UserComparison />);
+  </script>
+</body>
+</html>
+
+
+

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CodeChef Profiles Report</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/prop-types/15.8.1/prop-types.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/chrono-node/1.3.11/chrono.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/recharts/2.15.0/Recharts.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 font-sans">
+  <div id="root" class="container mx-auto p-4"></div>
+
+  <script type="text/babel">
+    // Initializing React and dependencies
+    const { useState, useEffect } = React;
+    const { createRoot } = ReactDOM;
+
+    // Defining the main App component
+    const App = () => {
+      const [data, setData] = useState(null);
+      const [loading, setLoading] = useState(true);
+      const [error, setError] = useState(null);
+
+      // Function to load and parse Excel file
+      const loadExcelData = async (filePath) => {
+        const response = await fetch(filePath);
+        if (!response.ok) {
+          throw new Error(`HTTP error! status: ${response.status}`);
+        }
+        const arrayBuffer = await response.arrayBuffer();
+        const workbook = XLSX.read(arrayBuffer, { type: "array" });
+
+        // Convert each sheet to JSON
+        const users = XLSX.utils.sheet_to_json(workbook.Sheets["Users"]);
+        const badges = XLSX.utils.sheet_to_json(workbook.Sheets["Badges"]);
+        const ratings = XLSX.utils.sheet_to_json(workbook.Sheets["Ratings"]);
+        const ranks = XLSX.utils.sheet_to_json(workbook.Sheets["Ranks"]);
+        const submissions = XLSX.utils.sheet_to_json(workbook.Sheets["Submissions"]);
+
+        return { users, badges, ratings, ranks, submissions };
+      };
+
+      // Processing and cleaning data from all sheets
+      const processAndCleanData = (users, badges, ratings, ranks, submissions) => {
+        // Cleaning users data
+        const cleanedUsers = users.map(row => ({ username: row["Username"]?.trim() || "" }))
+          .filter(row => row.username);
+
+        // Cleaning badges data
+        const cleanedBadges = badges.map(row => ({
+          username: row["Username"]?.trim() || "",
+          title: row["Title"]?.trim() || "",
+          type: row["Title"]?.split(" - ")[0]?.trim() || "",
+          level: row["Title"]?.split(" - ")[1]?.replace("Badge", "").trim() || "",
+        })).filter(row => row.username && row.title !== "No Badges Earned");
+
+        // Aggregating badges by user and type
+        const badgeCounts = cleanedBadges.reduce((acc, { username, type, level }) => {
+          acc[username] = acc[username] || { total: 0, types: {} };
+          acc[username].total += 1;
+          acc[username].types[type] = acc[username].types[type] || {};
+          acc[username].types[type][level] = (acc[username].types[type][level] || 0) + 1;
+          return acc;
+        }, {});
+
+        // Cleaning ratings data
+        const cleanedRatings = ratings.map(row => {
+          const rating = parseInt(row["Rating"]?.replace("?i\n    Provisional Rating, click to know more", "")?.trim(), 10);
+          const highest = parseInt(row["Highest"]?.match(/\d+/)?.[0], 10);
+          return {
+            username: row["Username"]?.trim() || "",
+            rating: isNaN(rating) ? null : rating,
+            highest: isNaN(highest) ? null : highest,
+          };
+        }).filter(row => row.username && row.rating !== null);
+
+        // Cleaning ranks data
+        const cleanedRanks = ranks.map(row => ({
+          username: row["Username"]?.trim() || "",
+          label: row["Label"]?.trim() || "",
+          rank: parseInt(row["Rank"]?.trim(), 10) || null,
+        })).filter(row => row.username && row.rank !== null);
+
+        // Aggregating ranks by user
+        const rankData = cleanedRanks.reduce((acc, { username, label, rank }) => {
+          acc[username] = acc[username] || {};
+          acc[username][label] = rank;
+          return acc;
+        }, {});
+
+        // Cleaning submissions data
+        const cleanedSubmissions = submissions.map(row => {
+          const date = chrono.parseDate(row["Time"]?.trim() || "");
+          return {
+            username: row["Username"]?.trim() || "",
+            time: date ? date.toISOString().slice(0, 7) : null, // Aggregate by year-month
+            problem: row["Problem"]?.trim() || "",
+            result: row["Result"]?.trim() === "(100)" ? 100 : null,
+            language: row["Language"]?.trim() || "",
+          };
+        }).filter(row => row.username && row.time && row.result === 100);
+
+        // Aggregating submissions by user and language
+        const submissionCounts = cleanedSubmissions.reduce((acc, { username, language }) => {
+          acc[username] = acc[username] || { total: 0, languages: {} };
+          acc[username].total += 1;
+          acc[username].languages[language] = (acc[username].languages[language] || 0) + 1;
+          return acc;
+        }, {});
+
+        // Aggregating submissions by month
+        const submissionsByMonth = cleanedSubmissions.reduce((acc, { time }) => {
+          acc[time] = (acc[time] || 0) + 1;
+          return acc;
+        }, {});
+
+        // Merging data
+        const mergedData = cleanedUsers.map(user => ({
+          username: user.username,
+          badges: badgeCounts[user.username] || { total: 0, types: {} },
+          rating: cleanedRatings.find(r => r.username === user.username)?.rating || 0,
+          highestRating: cleanedRatings.find(r => r.username === user.username)?.highest || 0,
+          globalRank: rankData[user.username]?.["Global Rank"] || null,
+          countryRank: rankData[user.username]?.["Country Rank"] || null,
+          submissions: submissionCounts[user.username] || { total: 0, languages: {} },
+        }));
+
+        // Preparing chart data
+        const badgeTypeData = Object.entries(
+          cleanedBadges.reduce((acc, { type, level }) => {
+            acc[type] = acc[type] || { Bronze: 0, Silver: 0, Gold: 0, Diamond: 0 };
+            acc[type][level] += 1;
+            return acc;
+          }, {})
+        ).map(([type, levels]) => ({ type, ...levels }));
+
+        const ratingData = cleanedRatings.map(r => r.rating).filter(r => r !== null);
+        const languageData = Object.entries(
+          cleanedSubmissions.reduce((acc, { language }) => {
+            acc[language] = (acc[language] || 0) + 1;
+            return acc;
+          }, {})
+        ).map(([language, count]) => ({ language, count }));
+
+        const submissionTimeData = Object.entries(submissionsByMonth)
+          .map(([month, count]) => ({ month, count }))
+          .sort((a, b) => a.month.localeCompare(b.month));
+
+        // Finding interesting fact: User with most badges
+        const topBadgeUser = Object.entries(badgeCounts)
+          .reduce((max, [username, { total }]) => (total > max.total ? { username, total } : max), { username: "", total: 0 });
+
+        return {
+          users: mergedData,
+          badgeTypeData,
+          ratingData,
+          languageData,
+          submissionTimeData,
+          interestingFact: `User ${topBadgeUser.username} earned the most badges with a total of ${topBadgeUser.total}!`,
+        };
+      };
+
+      // Loading data from Excel file
+      useEffect(() => {
+        const loadData = async () => {
+          try {
+            const { users, badges, ratings, ranks, submissions } = await loadExcelData("./codechefprofiles.xlsx");
+            const processedData = processAndCleanData(users, badges, ratings, ranks, submissions);
+            setData(processedData);
+            setLoading(false);
+          } catch (err) {
+            console.error("Error loading Excel:", err);
+            setError(err.message);
+            setLoading(false);
+          }
+        };
+
+        loadData();
+      }, []);
+
+      // Rendering error message if error
+      if (error) {
+        return (
+          <div className="text-center text-xl font-semibold text-red-600">
+            Error loading data: {error}<br /><br />
+            Please ensure the file &#39;codechefprofiles.xlsx&#39; is placed in the same directory as this HTML file and is being served by your local server (e.g., VS Code Live Server). The file should be accessible at the relative path &#39;./codechefprofiles.xlsx&#39;. If the error persists, check the console for more details and verify the file path.
+          </div>
+        );
+      }
+
+      // Rendering loading message
+      if (loading) {
+        return (
+          <div className="text-center text-xl font-semibold text-gray-700">
+            Loading CodeChef Profiles Report...
+          </div>
+        );
+      }
+
+      // Rendering main report
+      return (
+        <div className="bg-white shadow-md rounded-lg p-6">
+          {/* Displaying summary */}
+          <h1 className="text-3xl font-bold text-blue-600 mb-4">CodeChef Profiles Report</h1>
+          <p className="text-lg text-gray-700 mb-6">
+            This report analyzes {data.users.length} CodeChef users, their badges, ratings, ranks, and submission activity. Below are key visualizations and insights.
+          </p>
+
+          {/* Displaying badge distribution bar chart */}
+          <h2 className="text-2xl font-semibold text-blue-500 mb-4">Badge Distribution by Type and Level</h2>
+          <div className="mb-8">
+            <Recharts.ResponsiveContainer width="100%" height={400}>
+              <Recharts.BarChart data={data.badgeTypeData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                <Recharts.CartesianGrid strokeDasharray="3 3" />
+                <Recharts.XAxis dataKey="type" label={{ value: "Badge Type", position: "insideBottom", offset: -5, fontSize: 12 }} />
+                <Recharts.YAxis label={{ value: "Count", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                <Recharts.Tooltip />
+                <Recharts.Legend />
+                <Recharts.Bar dataKey="Bronze" fill="#cd7f32" />
+                <Recharts.Bar dataKey="Silver" fill="#c0c0c0" />
+                <Recharts.Bar dataKey="Gold" fill="#ffd700" />
+                <Recharts.Bar dataKey="Diamond" fill="#b9f2ff" />
+              </Recharts.BarChart>
+            </Recharts.ResponsiveContainer>
+          </div>
+
+          {/* Displaying rating distribution histogram */}
+          <h2 className="text-2xl font-semibold text-blue-500 mb-4">Rating Distribution</h2>
+          <div className="mb-8">
+            <Recharts.ResponsiveContainer width="100%" height={400}>
+              <Recharts.BarChart
+                data={Object.entries(
+                  data.ratingData.reduce((acc, rating) => {
+                    const bin = Math.floor(rating / 100) * 100;
+                    const binKey = `${bin}-${bin + 99}`;
+                    acc[binKey] = (acc[binKey] || 0) + 1;
+                    return acc;
+                  }, {})
+                ).map(([range, count]) => ({ range, count }))
+                .sort((a, b) => a.range.localeCompare(b.range))}
+                margin={{ top: 20, right: 30, left: 20, bottom: 5 }}
+              >
+                <Recharts.CartesianGrid strokeDasharray="3 3" />
+                <Recharts.XAxis dataKey="range" label={{ value: "Rating Range", position: "insideBottom", offset: -5, fontSize: 12 }} />
+                <Recharts.YAxis label={{ value: "Count", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                <Recharts.Tooltip />
+                <Recharts.Bar dataKey="count" fill="#4a90e2" />
+              </Recharts.BarChart>
+            </Recharts.ResponsiveContainer>
+          </div>
+
+          {/* Displaying language distribution pie chart */}
+          <h2 className="text-2xl font-semibold text-blue-500 mb-4">Submission Language Distribution</h2>
+          <div className="mb-8">
+            <Recharts.ResponsiveContainer width="100%" height={400}>
+              <Recharts.PieChart>
+                <Recharts.Pie
+                  data={data.languageData}
+                  dataKey="count"
+                  nameKey="language"
+                  cx="50%"
+                  cy="50%"
+                  outerRadius={150}
+                  fill="#8884d8"
+                  label={{ fontSize: 12 }}
+                >
+                  {data.languageData.map((entry, index) => (
+                    <Recharts.Cell key={`cell-${index}`} fill={['#0088FE', '#00C49F', '#FFBB28', '#FF8042'][index % 4]} />
+                  ))}
+                </Recharts.Pie>
+                <Recharts.Tooltip />
+                <Recharts.Legend />
+              </Recharts.PieChart>
+            </Recharts.ResponsiveContainer>
+          </div>
+
+          {/* Displaying submission activity over time */}
+          <h2 className="text-2xl font-semibold text-blue-500 mb-4">Submission Activity Over Time</h2>
+          <div className="mb-8">
+            <Recharts.ResponsiveContainer width="100%" height={400}>
+              <Recharts.LineChart data={data.submissionTimeData} margin={{ top: 20, right: 30, left: 20, bottom: 5 }}>
+                <Recharts.CartesianGrid strokeDasharray="3 3" />
+                <Recharts.XAxis dataKey="month" label={{ value: "Month", position: "insideBottom", offset: -5, fontSize: 12 }} />
+                <Recharts.YAxis label={{ value: "Submissions", angle: -90, position: "insideLeft", fontSize: 12 }} />
+                <Recharts.Tooltip />
+                <Recharts.Line type="monotone" dataKey="count" stroke="#82ca9d" />
+              </Recharts.LineChart>
+            </Recharts.ResponsiveContainer>
+          </div>
+
+          {/* Displaying interesting fact */}
+          <h2 className="text-2xl font-semibold text-blue-500 mb-4">Interesting Fact</h2>
+          <p className="text-lg text-gray-700 mb-6">{data.interestingFact}</p>
+
+          {/* Displaying conclusion */}
+          <h2 className="text-2xl font-semibold text-blue-500 mb-4">Conclusion</h2>
+          <p className="text-lg text-gray-700">
+            The CodeChef profiles dataset reveals a vibrant community of competitive programmers. The badge distribution shows a strong focus on problem-solving, with many users earning Bronze and Silver badges. Ratings are concentrated around 1000–1400, indicating a mix of beginner and intermediate coders. C++ and Python dominate submissions, reflecting their popularity in competitive programming. Submission activity peaks in certain months, suggesting contest-driven engagement. The standout user with the most badges highlights exceptional dedication to the platform.
+          </p>
+        </div>
+      );
+    };
+
+    // Rendering the app
+    const root = createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
